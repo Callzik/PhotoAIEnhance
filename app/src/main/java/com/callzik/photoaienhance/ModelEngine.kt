@@ -11,89 +11,100 @@ import java.nio.ByteOrder
 import kotlin.math.roundToInt
 
 /**
- * ESPCN x2 (ONNX), trained by clibdev/ESPCN-PyTorch.
- * Inference is on Y (luminance). Chroma is interpolated from the source image.
- * Tiling limits transient tensor allocations and avoids seams using a padded input.
+ * Real-ESRGAN General x4v3 (RGB). Native ONNX resolution ×4,
+ * averaged to ×2 output. Small overlapping tiles prevent huge tensors.
+ *
+ * Input/output: float32 NCHW, channel order RGB, [0..1] input.
+ * Original model: xinntao/Real-ESRGAN, BSD-3-Clause.
  */
 object ModelEngine {
-    private const val SCALE = 2
     private const val CORE = 96
-    private const val PAD = 8
-    private const val PATCH = CORE + 2 * PAD
-    private const val OUT_PATCH = PATCH * SCALE
-    private val env by lazy { OrtEnvironment.getEnvironment() }
+    private const val PAD = 20
+    private const val PATCH = CORE + PAD * 2
+    private const val NETWORK_SCALE = 4
+    private const val EXPORT_SCALE = 2
+    private const val OUT_PATCH = PATCH * NETWORK_SCALE
+
+    private val env: OrtEnvironment by lazy { OrtEnvironment.getEnvironment() }
     private var session: OrtSession? = null
 
-    private fun model(context: Context): OrtSession {
+    private fun getSession(context: Context): OrtSession {
         session?.let { return it }
-        val bytes = context.assets.open("espcn-x2.onnx").use { it.readBytes() }
-        val opts = OrtSession.SessionOptions()
+        val bytes = context.assets.open("realesr-general-x4v3.onnx").use { it.readBytes() }
+        val options = OrtSession.SessionOptions()
         try {
-            opts.setIntraOpNumThreads(2)
-            val created = env.createSession(bytes, opts)
+            options.setIntraOpNumThreads(2)
+            val created = env.createSession(bytes, options)
             session = created
             return created
         } finally {
-            opts.close()
+            options.close()
         }
     }
 
-    // Serialize heavy operations to avoid simultaneous large images exhausting the app heap.
     @Synchronized
     fun upscale(context: Context, source: Bitmap): Bitmap {
-        require(source.width > 0 && source.height > 0)
-        val session = model(context)
-        val w = source.width
-        val h = source.height
-        val src = IntArray(w * h)
-        source.getPixels(src, 0, w, 0, 0, w, h)
+        val network = getSession(context)
+        val width = source.width
+        val height = source.height
+        require(width > 0 && height > 0)
+        val result = Bitmap.createBitmap(width * EXPORT_SCALE, height * EXPORT_SCALE, Bitmap.Config.ARGB_8888)
 
-        val result = Bitmap.createScaledBitmap(source, w * SCALE, h * SCALE, true)
-        val input = ByteBuffer.allocateDirect(PATCH * PATCH * 4)
+        val floatInput = ByteBuffer.allocateDirect(3 * PATCH * PATCH * 4)
             .order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val tensorDimensions = longArrayOf(1L, 3L, PATCH.toLong(), PATCH.toLong())
+        val channelSize = PATCH * PATCH
+        val outputPlane = OUT_PATCH * OUT_PATCH
 
-        for (y0 in 0 until h step CORE) {
-            for (x0 in 0 until w step CORE) {
-                input.clear()
-                for (py in 0 until PATCH) {
-                    val sy = (y0 + py - PAD).coerceIn(0, h - 1)
-                    for (px in 0 until PATCH) {
-                        val sx = (x0 + px - PAD).coerceIn(0, w - 1)
-                        val p = src[sy * w + sx]
-                        // ITU-R BT.601 limited-range Y, matching ESPCN's training pipeline.
-                        val yy = (16f + 65.481f * Color.red(p) / 255f +
-                            128.553f * Color.green(p) / 255f +
-                            24.966f * Color.blue(p) / 255f) / 255f
-                        input.put(yy)
+        for (top in 0 until height step CORE) {
+            for (left in 0 until width step CORE) {
+                // Load only the pixels needed for this tile, with edge replication.
+                val startX = (left - PAD).coerceAtLeast(0)
+                val startY = (top - PAD).coerceAtLeast(0)
+                val endX = (left + CORE + PAD).coerceAtMost(width)
+                val endY = (top + CORE + PAD).coerceAtMost(height)
+                val regionW = endX - startX
+                val regionH = endY - startY
+                val region = IntArray(regionW * regionH)
+                source.getPixels(region, 0, regionW, startX, startY, regionW, regionH)
+
+                floatInput.clear()
+                for (dy in 0 until PATCH) {
+                    val sy = (top + dy - PAD).coerceIn(0, height - 1)
+                    for (dx in 0 until PATCH) {
+                        val sx = (left + dx - PAD).coerceIn(0, width - 1)
+                        val px = region[(sy - startY) * regionW + sx - startX]
+                        val index = dy * PATCH + dx
+                        floatInput.put(index, Color.red(px) / 255f)
+                        floatInput.put(channelSize + index, Color.green(px) / 255f)
+                        floatInput.put(2 * channelSize + index, Color.blue(px) / 255f)
                     }
                 }
-                input.rewind()
-                OnnxTensor.createTensor(env, input, longArrayOf(1, 1, PATCH.toLong(), PATCH.toLong())).use { t ->
-                    session.run(mapOf("input" to t)).use { outputs ->
-                        val neural = (outputs[0] as OnnxTensor).floatBuffer
-                        val tw = minOf(CORE, w - x0) * SCALE
-                        val th = minOf(CORE, h - y0) * SCALE
-                        val tile = IntArray(tw * th)
-                        result.getPixels(tile, 0, tw, x0 * SCALE, y0 * SCALE, tw, th)
-                        for (dy in 0 until th) {
-                            for (dx in 0 until tw) {
-                                val i = dy * tw + dx
-                                val pixel = tile[i]
-                                val r = Color.red(pixel)
-                                val g = Color.green(pixel)
-                                val b = Color.blue(pixel)
-                                val interpolatedY = (16f + 65.481f * r / 255f +
-                                    128.553f * g / 255f + 24.966f * b / 255f) / 255f
-                                val refinedY = neural.get((dy + PAD * SCALE) * OUT_PATCH + dx + PAD * SCALE)
-                                val delta = (refinedY - interpolatedY) * 255f * 1.164383f
-                                tile[i] = Color.rgb(
-                                    (r + delta).roundToInt().coerceIn(0, 255),
-                                    (g + delta).roundToInt().coerceIn(0, 255),
-                                    (b + delta).roundToInt().coerceIn(0, 255)
-                                )
+                floatInput.rewind()
+
+                OnnxTensor.createTensor(env, floatInput, tensorDimensions).use { inputTensor ->
+                    network.run(mapOf("input" to inputTensor)).use { outputs ->
+                        val outputTensor = outputs[0] as OnnxTensor
+                        val output = outputTensor.floatBuffer
+                        val croppedW = minOf(CORE, width - left) * EXPORT_SCALE
+                        val croppedH = minOf(CORE, height - top) * EXPORT_SCALE
+                        val pixels = IntArray(croppedW * croppedH)
+
+                        for (y in 0 until croppedH) {
+                            val oy = PAD * NETWORK_SCALE + y * 2
+                            for (x in 0 until croppedW) {
+                                val ox = PAD * NETWORK_SCALE + x * 2
+                                val pos = oy * OUT_PATCH + ox
+                                fun sample(plane: Int): Int {
+                                    val i = plane * outputPlane + pos
+                                    val average = (output.get(i) + output.get(i + 1) +
+                                        output.get(i + OUT_PATCH) + output.get(i + OUT_PATCH + 1)) * 0.25f
+                                    return (average * 255f).roundToInt().coerceIn(0, 255)
+                                }
+                                pixels[y * croppedW + x] = Color.rgb(sample(0), sample(1), sample(2))
                             }
                         }
-                        result.setPixels(tile, 0, tw, x0 * SCALE, y0 * SCALE, tw, th)
+                        result.setPixels(pixels, 0, croppedW, left * EXPORT_SCALE, top * EXPORT_SCALE, croppedW, croppedH)
                     }
                 }
             }
