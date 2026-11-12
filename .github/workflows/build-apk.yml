@@ -18,16 +18,16 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Download and verify ESPCN x2 model
+      - name: Download and verify Real-ESRGAN General x4v3
         run: |
           mkdir -p app/src/main/assets
-          curl -fsSL --retry 3 --output app/src/main/assets/espcn-x2.onnx \
-            https://github.com/clibdev/ESPCN-PyTorch/releases/download/1.0.0/espcn-x2.onnx
-          echo "6c806349be7f963f3d0895050a771a5de15e9950361e2a2f92624e4b1f675044  app/src/main/assets/espcn-x2.onnx" | sha256sum -c -
+          curl -fsSL --retry 3 --output app/src/main/assets/realesr-general-x4v3.onnx \
+            https://huggingface.co/CoderViking/realesr-general-x4v3-onnx/resolve/c6a971706797c7502945a2b4c4274fce4900d4ab/realesr-general-x4v3.onnx
+          echo "1940a93ee08283a0a7286183186357b1688fe9fa8ede74604b424586aaddf112  app/src/main/assets/realesr-general-x4v3.onnx" | sha256sum -c -
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
       - uses: actions/upload-artifact@v4
         with:
-          name: PhotoAIEnhance-v1.1-debug-apk
+          name: PhotoAIEnhance-v1.2-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
