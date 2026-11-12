@@ -28,8 +28,8 @@ class MainActivity : Activity() {
             setPadding(0, 8, 0, 16)
             root.addView(this)
         }
-        label("Photo AI Enhance v1.1")
-        label("ESPCN нейросеть · ×2 · без интернета")
+        label("Photo AI Enhance v1.2")
+        label("Real-ESRGAN · ×2 · без интернета")
         status = label("")
         toggle = Button(this).apply { root.addView(this) }
         toggle.setOnClickListener {
@@ -42,20 +42,21 @@ class MainActivity : Activity() {
             }
         }
         Button(this).apply {
-            text = "Улучшить новые фото сейчас"
+            text = "Улучшить последнее фото ещё раз"
             setOnClickListener {
                 if (hasPhotoPermission()) {
                     WorkManager.getInstance(this@MainActivity).enqueueUniqueWork(
                         "process-photo-manual",
                         ExistingWorkPolicy.KEEP,
-                        OneTimeWorkRequestBuilder<PhotoWorker>().build()
+                        OneTimeWorkRequestBuilder<PhotoWorker>()
+                            .setInputData(workDataOf("force_latest" to true)).build()
                     )
-                    status.text = "Обработка запрошена. Результат появится в галерее."
+                    status.text = "Повторная обработка последнего фото запрошена. Открой приложение позже для проверки результата."
                 } else requestPermissions(arrayOf(Manifest.permission.READ_MEDIA_IMAGES), 100)
             }
             root.addView(this)
         }
-        label("Новые снимки отслеживаются автоматически. Android может задерживать запуск. " +
+        label("Новые снимки отслеживаются автоматически. Нейросеть Real-ESRGAN может работать несколько минут, Android может задерживать фоновый запуск. " +
             "Результаты: Pictures/AI Upscaled. Оригиналы остаются в галерее.")
         setContentView(root)
         if (prefs.getBoolean("enabled", false) && hasPhotoPermission()) configure(true)
