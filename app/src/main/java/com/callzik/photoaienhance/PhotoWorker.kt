@@ -35,35 +35,43 @@ class PhotoWorker(context: Context, params: WorkerParameters) : Worker(context, 
                     if (!forceLatest && prefs.getBoolean("processed_$id", false)) continue
 
                     val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-                    val orientation = resolver.openInputStream(uri)?.use { input ->
-                        val exif = ExifInterface(input)
-                        Pair(exif.rotationDegrees, exif.isFlipped)
-                    } ?: Pair(0, false)
-                    val bitmap = loadBitmap(uri) ?: continue
-                    val transform = Matrix().apply {
-                        if (orientation.second) postScale(-1f, 1f)
-                        if (orientation.first != 0) postRotate(orientation.first.toFloat())
+                    val pcAddress = prefs.getString("server_url", "")?.trim().orEmpty()
+                    if (pcAddress.isNotEmpty()) {
+                        val token = prefs.getString("server_token", "").orEmpty()
+                        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: continue
+                        val enhanced = PcApi.enhance(pcAddress, token, bytes)
+                        saveNetworkResult(id, enhanced)
+                    } else {
+                        // Offline fallback: same Real-ESRGAN model as v1.2, on phone CPU.
+                        val orientation = resolver.openInputStream(uri)?.use { input ->
+                            val exif = ExifInterface(input)
+                            Pair(exif.rotationDegrees, exif.isFlipped)
+                        } ?: Pair(0, false)
+                        val bitmap = loadBitmap(uri) ?: continue
+                        val transform = Matrix().apply {
+                            if (orientation.second) postScale(-1f, 1f)
+                            if (orientation.first != 0) postRotate(orientation.first.toFloat())
+                        }
+                        val source = if (orientation.first != 0 || orientation.second) {
+                            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, transform, true)
+                                .also { if (it !== bitmap) bitmap.recycle() }
+                        } else bitmap
+                        val enhanced = try {
+                            ModelEngine.upscale(applicationContext, source)
+                        } finally {
+                            source.recycle()
+                        }
+                        try {
+                            saveResult(id, enhanced)
+                        } finally {
+                            enhanced.recycle()
+                        }
                     }
-                    val source = if (orientation.first != 0 || orientation.second) {
-                        Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, transform, true)
-                            .also { if (it !== bitmap) bitmap.recycle() }
-                    } else bitmap
-
-                    val enhanced = try {
-                        ModelEngine.upscale(applicationContext, source)
-                    } finally {
-                        source.recycle()
-                    }
-                    try {
-                        saveResult(id, enhanced)
-                        prefs.edit()
-                            .putBoolean("processed_$id", true)
-                            .putLong("last_success", System.currentTimeMillis())
-                            .putLong("last_processed_id", id)
-                            .apply()
-                    } finally {
-                        enhanced.recycle()
-                    }
+                    prefs.edit()
+                        .putBoolean("processed_$id", true)
+                        .putLong("last_success", System.currentTimeMillis())
+                        .putLong("last_processed_id", id)
+                        .apply()
                     if (forceLatest) break
                 }
             }
@@ -73,6 +81,28 @@ class PhotoWorker(context: Context, params: WorkerParameters) : Worker(context, 
         } catch (e: Exception) {
             prefs.edit().putString("last_error", e.message ?: e.javaClass.simpleName).apply()
             return Result.retry()
+        }
+    }
+
+    private fun saveNetworkResult(id: Long, jpeg: ByteArray) {
+        val resolver = applicationContext.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "AI_PC_v13_${id}_${System.currentTimeMillis()}.jpg")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/AI Upscaled")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val target = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("Не удалось создать фото")
+        try {
+            resolver.openOutputStream(target)?.use { it.write(jpeg) }
+                ?: throw IllegalStateException("Не удалось открыть файл для сохранения")
+            resolver.update(target, ContentValues().apply {
+                put(MediaStore.Images.Media.IS_PENDING, 0)
+            }, null, null)
+        } catch (e: Exception) {
+            resolver.delete(target, null, null)
+            throw e
         }
     }
 
@@ -111,7 +141,7 @@ class PhotoWorker(context: Context, params: WorkerParameters) : Worker(context, 
     private fun saveResult(id: Long, bitmap: Bitmap) {
         val resolver = applicationContext.contentResolver
         val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, "AI_v12_${id}_${System.currentTimeMillis()}.jpg")
+            put(MediaStore.Images.Media.DISPLAY_NAME, "AI_local_v13_${id}_${System.currentTimeMillis()}.jpg")
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
             put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/AI Upscaled")
             put(MediaStore.Images.Media.IS_PENDING, 1)

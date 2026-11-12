@@ -3,6 +3,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,6 +30,16 @@ jobs:
         run: gradle --no-daemon assembleDebug
       - uses: actions/upload-artifact@v4
         with:
-          name: PhotoAIEnhance-v1.2-debug-apk
+          name: PhotoAIEnhance-v1.3-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Check Python server syntax
+        run: python3 -m py_compile pc-server/server.py
+      - name: Pack Windows PC server
+        run: |
+          zip -r PhotoAIEnhance-PC-Server-v1.3.zip pc-server -x 'pc-server/__pycache__/*'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhotoAIEnhance-PC-Server-v1.3
+          path: PhotoAIEnhance-PC-Server-v1.3.zip
           if-no-files-found: error

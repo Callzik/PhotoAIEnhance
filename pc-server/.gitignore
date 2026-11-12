@@ -1,0 +1,5 @@
+.venv/
+engine/
+server_config.json
+*.zip
+__pycache__/
