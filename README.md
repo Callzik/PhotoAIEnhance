@@ -1,34 +1,39 @@
-# Photo AI Enhance v1.2
+# Photo AI Enhance v1.3
 
-Android photo-enhancement app for Samsung Galaxy A56.
+Automated AI photo enhancement for Samsung Galaxy A56, now with PC GPU mode over **Tailscale** (Wi-Fi **or mobile data**) plus phone-only fallback.
 
-## What's new
-- Replaced the subtle ESPCN x2 neural network with **Real-ESRGAN General x4v3** for perceptual restoration.
-- The model produces 4x RGB output, reduced to 2x final output (2x in both dimensions).
-- Increased max input longest side from the v1.1 2048-pixel power-of-two sampling to **3072 pixels**. This preserves more source detail. For a 4000x3000 photo, output is approximately 6144x4608.
-- You can process the **latest camera photo again** with the main button to compare results even if it was already processed by older app versions.
-- Photos save as `Pictures/AI Upscaled/AI_v12_<id>_<timestamp>.jpg`, originals untouched.
-- Orientation correction based on EXIF remains.
-- Automatic new-photo observation uses WorkManager content URI triggers, plus 15-minute fallback. Android can delay or block background work.
+## New in v1.3
+- **Windows PC server** under `pc-server/`. Uses official Real-ESRGAN ncnn-Vulkan binary for GTX 1650 and model `realesrgan-x4plus`, ×2 output.
+- Phone sends the original photo file over encrypted Tailscale VPN, authenticated with a shared secret. PC applies EXIF orientation and returns the enhanced JPEG.
+- Phone saves results separately in Pictures/AI Upscaled. Original is not touched.
+- Android UI: Tailscale PC address, secret key, test connection, save settings, switch back to phone-only Real-ESRGAN.
+- Existing MediaStore change watcher + 15-minute fallback. Android may delay/stop jobs.
 
-## Limitations
-- **Quality mode can take minutes or longer**, depending on image size, thermals, battery level, and CPU speed. Exact speed on the Galaxy A56 has not been measured.
-- Smartphone AI enhancement can add invented textures and over-sharpen some faces. Keep originals.
-- Very large images are capped at 3072 input px on the long edge for memory safety.
-- Android may stop long-running background work. Reopen the app to inspect errors.
-- This is debug signed on GitHub-hosted runners with a temporary keystore. **To install v1.2, you may need to uninstall v1.1 first** due to signature mismatch. To provide seamless updates later, set up a stable release signing key in private repository secrets.
-- No device testing has been done yet.
+## Setup on Windows + phone
+1. From GitHub Actions download `PhotoAIEnhance-PC-Server-v1.3`, extract both ZIP layers, and locate `pc-server/start-server.bat`.
+2. On PC install and sign into [Tailscale for Windows](https://tailscale.com/download/windows). On Galaxy A56 install and sign into [Tailscale for Android](https://tailscale.com/download/android) **with the same account**.
+3. Install [Python 3.11 or 3.12 for Windows](https://www.python.org/downloads/windows/) (enable Add Python to PATH).
+4. Double click `pc-server/start-server.bat`. The first run installs Pillow and downloads the official Vulkan engine (~45 MB).
+5. Console prints `http://100.x.y.z:8765` and a secret token; enter them in Photo AI Enhance 1.3, save, and test connection. Never post or commit the token.
+6. Allow access to **all photographs**, enable automatic processing, and take a photo. You can also enhance the latest photo with the manual button. Ensure PC stays on and doesn't sleep.
+7. For mobile data: disconnect Wi-Fi on the phone while keeping Tailscale enabled and test the connection. Do not port-forward TCP 8765.
 
-## Building
-GitHub Actions -> Build Android APK -> latest green build -> Artifacts -> PhotoAIEnhance-v1.2-debug-apk.
+If Windows Firewall blocks access, run an administrator PowerShell rule scoped to Tailscale private range: `New-NetFirewallRule -DisplayName "Photo AI Tailscale" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8765 -RemoteAddress 100.64.0.0/10 -Profile Any`.
 
-Workflow downloads a pinned ONNX model into `app/src/main/assets/realesr-general-x4v3.onnx` before compilation and verifies SHA256 `1940a93ee08283a0a7286183186357b1688fe9fa8ede74604b424586aaddf112`.
-For local offline builds, put that ONNX model in the same assets directory.
+## Safety / limitations
+- The server binds exclusively to the Tailscale IPv4 of the PC. Android only accepts an HTTP URL in the Tailscale CGNAT IP block and port 8765. HTTP is protected by encrypted Tailscale VPN in transit.
+- Share the token only with your own phone. PC server_config.json stays local; never upload it to GitHub.
+- No unconditional fallback to slow phone processing if PC is offline: background work retries, and an error is recorded. Remove PC address through "Переключить на локальное улучшение" to use the old offline path.
+- File size up to 40 MB; output up to 65 MB. The PC server limits the input longer side to 4096 px to fit GPU/host resources.
+- Inference on the GTX 1650 may take minutes; end-to-end performance and mobile network reliability have not been measured on the user's devices.
+- Background WorkManager jobs can be delayed or time out. On supported Android versions, user should allow unrestricted app battery usage if consistent processing is needed.
+- Existing debug APK signatures can differ between GitHub Actions runners; installation over v1.2 may fail. Uninstall v1.2 before installing v1.3 if signature mismatch. Gallery photos remain untouched.
+- Current version is a **test/debug build**, not yet device-tested.
+- Model and engine license: [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), [Real-ESRGAN-ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan). See original upstream licenses.
 
-## Model
-- Original architecture/weights: [Real-ESRGAN by Xintao Wang](https://github.com/xinntao/Real-ESRGAN) (BSD-3-Clause).
-- ONNX conversion: [CoderViking/realesr-general-x4v3-onnx](https://huggingface.co/CoderViking/realesr-general-x4v3-onnx), derived from the original release.
-- Input NCHW RGB float32 [0,1]; output 4x RGB. Tiled CPU inference via ONNX Runtime Android.
-- The Android code uses the model to restore and enlarge RGB image content, then downsamples its 4x output to 2x for a balanced result.
+## Build
+Actions → Build Android APK → successful build → Artifacts:
+- `PhotoAIEnhance-v1.3-debug-apk` (contains Android APK)
+- `PhotoAIEnhance-PC-Server-v1.3` (contains ZIP of Windows server files)
 
 Created with AI assistance (ChatGPT).
